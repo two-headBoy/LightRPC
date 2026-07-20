@@ -1,6 +1,7 @@
 #pragma once
 
 #include <arpa/inet.h>
+#include <cstring>
 
 #include <optional>
 #include <string>
