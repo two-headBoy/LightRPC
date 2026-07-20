@@ -1,0 +1,25 @@
+syntax = "proto3";
+package user;
+
+// 业务消息定义：用户服务
+// 该文件属于应用层（examples/），不属于框架库 lightrpc。
+// 框架只通过 RpcRequest.body (bytes) 透传序列化后的业务消息。
+
+message GetUserRequest {
+  int32 user_id = 1;
+}
+
+message GetUserResponse {
+  int32  user_id = 1;
+  string name    = 2;
+  string email   = 3;
+}
+
+message CreateUserRequest {
+  string name  = 1;
+  string email = 2;
+}
+
+message CreateUserResponse {
+  int32 user_id = 1;
+}

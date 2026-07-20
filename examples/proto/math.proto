@@ -1,0 +1,13 @@
+syntax = "proto3";
+package math;
+
+// 业务消息定义：数学服务
+
+message AddRequest {
+  int32 a = 1;
+  int32 b = 2;
+}
+
+message AddResponse {
+  int32 result = 1;
+}
