@@ -13,6 +13,11 @@
 #include "proto/benchmark.pb.h"
 #include "rpc/rpc_client.h"
 
+// 测试模式：
+//   QPS          - 开环压测：固定发送速率（QPS），与响应快慢无关
+//   CONCURRENCY  - 闭环并发：固定在途请求数，响应回来一个立即补发一个
+enum class TestMode { QPS, CONCURRENCY };
+
 struct BenchmarkResult {
     std::atomic<int64_t> sent_requests{0};   // 已发送请求数
     std::atomic<int64_t> total_requests{0};  // 已收到响应数
@@ -40,9 +45,11 @@ void PrintUsage(const char *prog) {
     std::cout << "Usage: " << prog << " [options]\n";
     std::cout << "Options:\n";
     std::cout << "  -server <ip:port>    Server address (default: 127.0.0.1:8080)\n";
+    std::cout << "  -mode <mode>         Test mode: qps | concurrency (default: qps)\n";
     std::cout << "  -threads <n>         Number of client threads (default: 4)\n";
     std::cout << "  -connections <n>     Number of connections (default: 1)\n";
-    std::cout << "  -qps <n>             Target QPS (default: 1000)\n";
+    std::cout << "  -qps <n>             Target QPS in qps mode (default: 1000)\n";
+    std::cout << "  -concurrency <n>     Target in-flight requests in concurrency mode (default: 100)\n";
     std::cout << "  -duration <seconds>  Test duration in seconds (default: 30)\n";
     std::cout << "  -timeout <ms>        RPC timeout in milliseconds (default: 1000)\n";
     std::cout << "  -warmup <seconds>    Warmup duration in seconds (default: 5)\n";
@@ -62,6 +69,13 @@ int ParseInt(const char *str, int default_val) {
 inline int QpsPerThread(int total_qps, int threads, int thread_id) {
     int base = total_qps / threads;
     int remainder = total_qps % threads;
+    return base + (thread_id < remainder ? 1 : 0);
+}
+
+// 并发模式下每线程维持的在途请求数，余数补偿避免整数除法丢槽位
+inline int ConcurrencyPerThread(int total_concurrency, int threads, int thread_id) {
+    int base = total_concurrency / threads;
+    int remainder = total_concurrency % threads;
     return base + (thread_id < remainder ? 1 : 0);
 }
 
@@ -106,6 +120,31 @@ inline void ThrottleUntil(std::chrono::steady_clock::time_point target) {
     }
 }
 
+// 统一记录一次响应：计数、延迟采样、错误分类。两种模式共用，保证统计口径一致。
+// 延迟采样覆盖所有响应（含超时/失败），否则 P99 会被排除的尾部延迟严重拉低。
+inline void RecordResponse(BenchmarkResult *result, int32_t code, int64_t latency_us, WorkerLatencyData *latency_data) {
+    result->total_requests.fetch_add(1);
+    result->total_latency_us.fetch_add(latency_us);
+    latency_data->latency_samples.push_back(latency_us);
+
+    if (code == static_cast<int32_t>(rpc::RpcErrorCode::OK)) {
+        result->success_requests.fetch_add(1);
+    } else {
+        result->failed_requests.fetch_add(1);
+        if (code == static_cast<int32_t>(rpc::RpcErrorCode::CLIENT_REQUEST_TIMEOUT)) {
+            result->timeout_errors.fetch_add(1);
+        } else if (code == static_cast<int32_t>(rpc::RpcErrorCode::CLIENT_CONNECTION_DISCONNECTED)) {
+            result->connection_errors.fetch_add(1);
+        } else if (code == static_cast<int32_t>(rpc::RpcErrorCode::CLIENT_NETWORK_ERROR)) {
+            result->network_errors.fetch_add(1);
+        } else if (code >= static_cast<int32_t>(rpc::RpcErrorCode::SERVER_SERVICE_NOT_FOUND)) {
+            result->server_errors.fetch_add(1);
+        } else {
+            result->other_errors.fetch_add(1);
+        }
+    }
+}
+
 void RunBenchmarkWorker(int thread_id, std::vector<rpc::RpcClient *> &clients, int total_qps, int threads,
                         int duration_ms, int timeout_ms, BenchmarkResult *result, WorkerLatencyData *latency_data) {
     auto start_time = std::chrono::steady_clock::now();
@@ -145,29 +184,7 @@ void RunBenchmarkWorker(int thread_id, std::vector<rpc::RpcClient *> &clients, i
                 auto req_end = std::chrono::steady_clock::now();
                 int64_t latency_us = std::chrono::duration_cast<std::chrono::microseconds>(req_end - req_start).count();
 
-                result->total_requests.fetch_add(1);
-
-                // 延迟采样覆盖所有响应（含超时/失败），否则 P99 会被排除的尾部延迟严重拉低
-                result->total_latency_us.fetch_add(latency_us);
-                latency_data->latency_samples.push_back(latency_us);
-
-                if (resp.code() == static_cast<int32_t>(rpc::RpcErrorCode::OK)) {
-                    result->success_requests.fetch_add(1);
-                } else {
-                    result->failed_requests.fetch_add(1);
-                    auto code = resp.code();
-                    if (code == static_cast<int32_t>(rpc::RpcErrorCode::CLIENT_REQUEST_TIMEOUT)) {
-                        result->timeout_errors.fetch_add(1);
-                    } else if (code == static_cast<int32_t>(rpc::RpcErrorCode::CLIENT_CONNECTION_DISCONNECTED)) {
-                        result->connection_errors.fetch_add(1);
-                    } else if (code == static_cast<int32_t>(rpc::RpcErrorCode::CLIENT_NETWORK_ERROR)) {
-                        result->network_errors.fetch_add(1);
-                    } else if (code >= static_cast<int32_t>(rpc::RpcErrorCode::SERVER_SERVICE_NOT_FOUND)) {
-                        result->server_errors.fetch_add(1);
-                    } else {
-                        result->other_errors.fetch_add(1);
-                    }
-                }
+                RecordResponse(result, resp.code(), latency_us, latency_data);
 
                 if (result->pending_requests.fetch_sub(1) == 1) {
                     result->finish_cv.notify_all();
@@ -182,11 +199,102 @@ void RunBenchmarkWorker(int thread_id, std::vector<rpc::RpcClient *> &clients, i
     }
 }
 
+// 闭环并发测试的 per-worker 状态。
+// 每个线程维持固定数量的在途请求（in_flight），响应回来后立即补发一个，从而保持并发度恒定。
+struct ConcurrencyWorkerState {
+    rpc::RpcClient *client;
+    int timeout_ms;
+    BenchmarkResult *result;
+    WorkerLatencyData *latency_data;
+    std::chrono::steady_clock::time_point end_time;
+
+    std::atomic<int64_t> in_flight{0};  // 当前在途请求数
+    std::atomic<bool> sending_done{false};
+    std::mutex mtx;
+    std::condition_variable cv;  // in_flight 归零时唤醒 worker 线程
+};
+
+// 发送一个请求并占用一个在途槽位（in_flight++）。
+// 其回调在响应到达时无条件释放该槽位（in_flight--），随后决定是否补发：
+//   - 补发：再 SendOneRequest 占回刚释放的槽位（in_flight++），净变化 0，并发度恒定
+//   - 不补发：槽位保持释放状态（净 -1），in_flight 最终归零时唤醒 worker
+// 递归是事件驱动的（CallRaw 异步返回，回调稍后在 EventLoop 线程触发），不会栈递归；
+// 仅当连接已断开时 CallRaw 会同步触发回调，此时 IsConnected() 为 false 走 drain 分支，避免死循环。
+void SendOneRequest(ConcurrencyWorkerState *ws) {
+    ws->in_flight.fetch_add(1);
+    ws->result->pending_requests.fetch_add(1);
+    ws->result->sent_requests.fetch_add(1);
+
+    auto req_start = std::chrono::steady_clock::now();
+
+    benchmark::EmptyRequest req;
+    std::string request_body;
+    req.SerializeToString(&request_body);
+
+    ws->client->CallRaw(
+        "BenchmarkService", "Ping", request_body,
+        [ws, req_start](const rpc::RpcResponse &resp) {
+            auto req_end = std::chrono::steady_clock::now();
+            int64_t latency_us = std::chrono::duration_cast<std::chrono::microseconds>(req_end - req_start).count();
+
+            RecordResponse(ws->result, resp.code(), latency_us, ws->latency_data);
+
+            ws->result->pending_requests.fetch_sub(1);
+
+            // 响应到达即无条件释放一个在途槽位（fetch_sub 返回的是减之前的值）
+            int64_t after = ws->in_flight.fetch_sub(1) - 1;
+
+            // 闭环控制：仍在时长内且连接正常则补发，维持固定在途并发数
+            bool within_time = std::chrono::steady_clock::now() < ws->end_time;
+            if (!ws->sending_done.load() && within_time && ws->client->IsConnected()) {
+                SendOneRequest(ws);  // 补发：占回刚释放的槽位，in_flight 净变化 0
+            } else {
+                ws->sending_done.store(true);
+                // 最后一个在途槽位排空时唤醒 worker 线程
+                if (after == 0) {
+                    std::lock_guard<std::mutex> lock(ws->mtx);
+                    ws->cv.notify_all();
+                }
+            }
+        },
+        ws->timeout_ms);
+}
+
+void RunConcurrencyWorker(int thread_id, std::vector<rpc::RpcClient *> &clients, int total_concurrency, int threads,
+                          int duration_ms, int timeout_ms, BenchmarkResult *result, WorkerLatencyData *latency_data) {
+    int concurrency_per_thread = ConcurrencyPerThread(total_concurrency, threads, thread_id);
+    rpc::RpcClient *client = clients[thread_id % clients.size()];
+
+    ConcurrencyWorkerState ws;
+    ws.client = client;
+    ws.timeout_ms = timeout_ms;
+    ws.result = result;
+    ws.latency_data = latency_data;
+    ws.end_time = std::chrono::steady_clock::now() + std::chrono::milliseconds(duration_ms);
+
+    // 并发模式下请求总数未知，预分配一个粗略容量，超出会自动扩容。
+    // push_back 的 reallocate 不影响已记录延迟（req_end 在 push 前 capture），只会延迟下一次补发。
+    latency_data->latency_samples.reserve(static_cast<size_t>(concurrency_per_thread) * 8);
+
+    // 填满初始在途槽位，之后由回调自动补发维持并发度
+    for (int i = 0; i < concurrency_per_thread; ++i) {
+        SendOneRequest(&ws);
+    }
+
+    // 等待所有在途请求排空（时长到期后停止补发，剩余在途自然完成）
+    {
+        std::unique_lock<std::mutex> lock(ws.mtx);
+        ws.cv.wait(lock, [&ws] { return ws.in_flight.load() == 0; });
+    }
+}
+
 int main(int argc, char *argv[]) {
     std::string server_addr = "127.0.0.1:8080";
+    TestMode test_mode = TestMode::QPS;
     int threads = 4;
     int connections = 1;
     int qps = 1000;
+    int concurrency = 100;
     int duration = 30;
     int timeout_ms = 1000;
     int warmup = 5;
@@ -195,12 +303,17 @@ int main(int argc, char *argv[]) {
         std::string arg = argv[i];
         if (arg == "-server" && i + 1 < argc) {
             server_addr = argv[++i];
+        } else if (arg == "-mode" && i + 1 < argc) {
+            std::string m = argv[++i];
+            test_mode = (m == "concurrency" || m == "conc") ? TestMode::CONCURRENCY : TestMode::QPS;
         } else if (arg == "-threads" && i + 1 < argc) {
             threads = ParseInt(argv[++i], 4);
         } else if (arg == "-connections" && i + 1 < argc) {
             connections = ParseInt(argv[++i], 1);
         } else if (arg == "-qps" && i + 1 < argc) {
             qps = ParseInt(argv[++i], 1000);
+        } else if (arg == "-concurrency" && i + 1 < argc) {
+            concurrency = ParseInt(argv[++i], 100);
         } else if (arg == "-duration" && i + 1 < argc) {
             duration = ParseInt(argv[++i], 30);
         } else if (arg == "-timeout" && i + 1 < argc) {
@@ -228,13 +341,25 @@ int main(int argc, char *argv[]) {
         connections = threads;
     }
 
+    // 并发模式下每个线程至少需要一个在途槽位
+    if (test_mode == TestMode::CONCURRENCY && concurrency < threads) {
+        std::cout << "Warning: concurrency (" << concurrency << ") < threads (" << threads
+                  << "), adjusting concurrency to " << threads << "\n";
+        concurrency = threads;
+    }
+
     std::cout << "============================================\n";
     std::cout << "LightRPC Benchmark Client\n";
     std::cout << "============================================\n";
     std::cout << "Server: " << ip << ":" << port << "\n";
+    std::cout << "Mode: " << (test_mode == TestMode::CONCURRENCY ? "concurrency" : "qps") << "\n";
     std::cout << "Threads: " << threads << "\n";
     std::cout << "Connections: " << connections << "\n";
-    std::cout << "Target QPS: " << qps << "\n";
+    if (test_mode == TestMode::CONCURRENCY) {
+        std::cout << "Target Concurrency: " << concurrency << "\n";
+    } else {
+        std::cout << "Target QPS: " << qps << "\n";
+    }
     std::cout << "Duration: " << duration << "s\n";
     std::cout << "Timeout: " << timeout_ms << "ms\n";
     std::cout << "Warmup: " << warmup << "s\n";
@@ -341,9 +466,16 @@ int main(int argc, char *argv[]) {
 
     auto test_start_time = std::chrono::steady_clock::now();
 
-    for (int i = 0; i < threads; ++i) {
-        worker_threads.emplace_back(RunBenchmarkWorker, i, std::ref(client_ptrs), qps, threads, duration * 1000,
-                                    timeout_ms, &result, &latency_data[i]);
+    if (test_mode == TestMode::CONCURRENCY) {
+        for (int i = 0; i < threads; ++i) {
+            worker_threads.emplace_back(RunConcurrencyWorker, i, std::ref(client_ptrs), concurrency, threads,
+                                        duration * 1000, timeout_ms, &result, &latency_data[i]);
+        }
+    } else {
+        for (int i = 0; i < threads; ++i) {
+            worker_threads.emplace_back(RunBenchmarkWorker, i, std::ref(client_ptrs), qps, threads, duration * 1000,
+                                        timeout_ms, &result, &latency_data[i]);
+        }
     }
 
     for (auto &t : worker_threads) {
@@ -352,11 +484,12 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // 发送完成时间：用于计算真实发送 QPS（不含等待响应的时间）
+    // 并发模式下 worker 线程会阻塞直到所有在途请求排空，join 完成即所有响应已收回；
+    // QPS 模式下 worker 只负责发送，join 完成后还需等待剩余在途回包。
     auto test_end_time = std::chrono::steady_clock::now();
 
-    std::cout << "Waiting for responses...\n";
-    {
+    if (test_mode == TestMode::QPS) {
+        std::cout << "Waiting for responses...\n";
         std::unique_lock<std::mutex> lock(result.finish_mutex);
         result.finish_cv.wait(lock, [&result] { return result.pending_requests.load() == 0; });
     }
@@ -407,18 +540,23 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // 发送 QPS：基于发送完成时间，不含等待响应的时间
+    // QPS 模式：actual_qps 为发送速率（基于发送完成时间，不含等待响应）。
+    // 并发模式：sent == total（worker 阻塞至所有在途排空），actual_qps 即吞吐量，
+    //           estimated_concurrency 按 Little's Law 应接近目标并发度，可作闭环正确性校验。
     auto actual_duration_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(test_end_time - test_start_time).count();
     double actual_qps = actual_duration_ms > 0 ? static_cast<double>(sent_req) * 1000.0 / actual_duration_ms : 0;
     double success_rate = total_req > 0 ? static_cast<double>(success_req) / total_req * 100 : 0;
-    // 估算在途并发数 = 发送 QPS × 平均延迟
+    // 估算在途并发数 = 吞吐 QPS × 平均延迟
     double estimated_concurrency = actual_qps * avg_latency_ms / 1000.0;
 
     std::cout << "\n============================================\n";
     std::cout << "Benchmark Results\n";
     std::cout << "============================================\n";
     std::cout << std::fixed << std::setprecision(2);
+    if (test_mode == TestMode::CONCURRENCY) {
+        std::cout << "Target Concurrency: " << concurrency << "\n";
+    }
     std::cout << "Sent Requests: " << sent_req << "\n";
     std::cout << "Total Responses: " << total_req << "\n";
     std::cout << "Success: " << success_req << "\n";

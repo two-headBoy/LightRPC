@@ -1,19 +1,26 @@
 # LightRPC
 
-基于 C++17 的轻量级 RPC 框架。Reactor 模式 + epoll 异步网络 + Protobuf + 线程池，提供强类型的服务注册与调用接口。
+基于 C++17 的轻量级 RPC 框架。采用 Reactor 模式，以 epoll 驱动异步网络、Protobuf 承载业务消息、线程池隔离业务计算，提供编译期强类型的服务注册与调用接口。
 
 ## 特性
 
-## 特性
-- **Reactor 异步网络**：当前实现为单 EventLoop + epoll；通过 eventfd 实现跨线程任务唤醒
-- **内置事件循环管理**：RpcServer / RpcClient 内部托管 EventLoop，启动后自动运行事件循环线程
-- **IO 与业务解耦**：网络IO逻辑运行在EventLoop，业务处理交由独立线程池，杜绝阻塞网络事件循环
-- **编译期强类型 RPC**：基于 SFINAE 实现 `is_proto_message` 类型特征，编译期校验 Protobuf 请求/响应类型，自动序列化与反序列化
-- **自定义帧协议**：4字节大端长度前缀 + Protobuf 二进制体，完整解决 TCP 粘包、半包问题
-- **客户端长连接池**：支持多TCP长连接复用，可配置连接数量，实现多路请求并发传输
-- **请求超时管控**：客户端支持自定义RPC超时，超时自动清理pending回调，避免内存泄漏
-- **高性能异步日志**：日志异步队列 + 后台落盘线程，支持按天/按行数滚动切割
-- **配套压测工具**：内置QPS限流压测客户端，支持自定义线程数、连接数、压测时长，输出完整延迟分位指标(P50/P90/P99)
+### 网络与并发
+- **Reactor 异步网络**：单 EventLoop + epoll；通过 eventfd 实现跨线程任务唤醒，所有网络事件在 IO 线程串行处理，无锁竞争
+- **分层的 EventLoop 管理**：底层 TcpServer / TcpClient **不持有** EventLoop，由上层 RpcServer / RpcClient 注入并托管生命周期，组件可复用
+- **IO 与业务解耦**：网络 IO 运行在 EventLoop 线程，业务处理交给独立线程池（带背压 + 最大队列长度），避免业务慢调用阻塞网络事件循环
+- **连接级线程安全**：每个 `RpcClient` 绑定一个 IO 线程；多连接场景下应用层可创建多个实例共享使用
+
+### RPC 与协议
+- **编译期强类型 RPC**：基于 SFINAE 实现 `is_proto_message` 类型萃取，编译期校验 Protobuf 请求/响应类型，自动序列化与反序列化
+- **自定义帧协议**：4 字节大端长度前缀 + Protobuf 二进制体，Codec 层只做字节流编解码，不感知业务内容，天然解决 TCP 粘包/半包
+- **统一错误码体系**：0 成功 / 1xxx 客户端错 / 2xxx 服务端错，业务与框架共用同一份枚举
+- **请求超时管控**：时间轮定时器，超时自动清理 pending 回调并通知调用方，避免内存泄漏与请求悬挂
+- **断连感知**：连接断开时主动回调所有 pending 请求，而不是静默清空
+
+### 工程与工具
+- **高性能异步日志**：异步队列 + 后台落盘线程，支持按天 / 按行数滚动切割
+- **双模式压测工具**：内置 benchmark_client，支持 **QPS 模式（开环）** 与 **并发模式（闭环）**，输出 P50 / P90 / P99 延迟分位与错误分类统计
+- **完整单元测试**：覆盖 Buffer、Log、ThreadPool、EventLoop、Channel、Epoller、Timer、RpcClient、RpcServer、RpcService 等核心模块
 
 ## 依赖
 
@@ -42,10 +49,13 @@ cmake .. && make -j$(nproc)
 ./bin/tests/timer_test
 
 # 运行性能压测
-./bin/tests/benchmark/benchmark_server   # 终端 1
-./bin/tests/benchmark/benchmark_client   # 终端 2
-# 高并发压测：8线程，5000 QPS，持续60秒
-./bin/tests/benchmark/benchmark_client -threads 8 -qps 5000 -duration 60
+./bin/tests/benchmark/benchmark_server           # 终端 1
+
+# QPS 模式（开环压测）：4 线程，10000 QPS，持续 30 秒
+./bin/tests/benchmark/benchmark_client -mode qps -threads 4 -connections 4 -qps 10000 -duration 30
+
+# 并发模式（闭环压测）：4 线程，200 在途，持续 30 秒
+./bin/tests/benchmark/benchmark_client -mode concurrency -threads 4 -connections 4 -concurrency 200 -duration 30
 ```
 
 ### 服务端
@@ -165,7 +175,61 @@ message RpcResponse { string request_id; int32 code; string msg; bytes body; }
 
 详细错误码定义见 [docs/error_code.md](docs/error_code.md)。
 
-## 编译规范
+## 压测工具
+
+`tests/benchmark/` 下提供 benchmark_server 和 benchmark_client，支持两种测试模式：
+
+### 两种模式
+
+| 模式 | 命令 | 控制目标 | 适用场景 |
+|------|------|----------|----------|
+| QPS 模式（开环） | `-mode qps -qps N` | 固定发送速率（与响应速度无关） | 模拟外部流量到达率，测系统在给定负载下的延迟 |
+| 并发模式（闭环） | `-mode concurrency -concurrency N` | 固定在途请求数（响应回来立即补发） | 测系统饱和吞吐、峰值 QPS、并发能力 |
+
+### 常用参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `-server <ip:port>` | 服务端地址 | 127.0.0.1:8080 |
+| `-mode <qps\|concurrency>` | 测试模式 | qps |
+| `-threads <n>` | 客户端线程数 | 4 |
+| `-connections <n>` | TCP 连接数（自动 ≥ threads） | 1 |
+| `-qps <n>` | QPS 模式下的目标 QPS | 1000 |
+| `-concurrency <n>` | 并发模式下的在途请求数 | 100 |
+| `-duration <s>` | 正式测试时长（秒） | 30 |
+| `-warmup <s>` | 预热时长（秒） | 5 |
+| `-timeout <ms>` | 单次请求超时 | 1000 |
+
+### 输出指标
+
+每次压测输出：
+- **吞吐**：实际 QPS、发送/接收请求数、成功率
+- **延迟**：平均、P50、P90、P99（含成功与失败）
+- **错误分类**：超时 / 连接断开 / 网络错误 / 服务端错误 / 其他
+- **并发估算**：按 Little's Law 估算的在途并发数，可用于校验闭环正确性
+
+## 性能数据
+
+### 测试环境
+
+| 项 | 配置 |
+|----|------|
+| CPU / 内存 | 单机回环 (loopback) |
+| 框架配置 | 4 IO 线程 / 4 业务线程 / 空业务 handler |
+| 测试负载 | EmptyRequest / EmptyResponse（零 payload） |
+| 测试时长 | 20s 正式 + 5s 预热 |
+
+### 核心指标
+
+| 测试项 | 模式 | 目标 | 实际 QPS | 成功率 | P99 延迟 | 平均延迟 |
+|--------|------|------|----------|--------|----------|----------|
+| 中载延迟 | QPS | 30,000 QPS | ~30,000 | ~100% | ~0.9 ms | ~0.17 ms |
+| 峰值吞吐 | Concurrency | 200 在途 | ~51,500 | ~99.93% | ~6.1 ms | ~3.9 ms |
+
+> 以上数据为本地回环环境下的参考值，实际性能因硬件、payload 大小、业务逻辑复杂度而异。
+> 可通过 `benchmark_client` 自行压测获得当前环境的准确数据。
+
+## 代码规范
 
 项目使用 `.clang-format` 进行代码格式化：
 
@@ -176,7 +240,3 @@ clang-format -i code/rpc/rpc_server.cc
 # 格式化所有文件
 find code tests -name "*.cc" -o -name "*.h" | xargs clang-format -i
 ```
-
-## License
-
-MIT

@@ -14,7 +14,7 @@ static void SignalHandler(int) { g_running = false; }
 
 int main(int argc, char *argv[]) {
     rpc::Log::Init(
-        {.level = rpc::LogLevel::DEBUG, .path = "./benchmark_server_log", .suffix = ".log", .max_queue_size = 1024});
+        {.level = rpc::LogLevel::WARN, .path = "./benchmark_server_log", .suffix = ".log", .max_queue_size = 1024});
 
     std::string ip = "127.0.0.1";
     uint16_t port = 8080;

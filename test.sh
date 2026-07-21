@@ -50,15 +50,35 @@ cleanup_bench() {
 }
 trap cleanup_bench EXIT
 
+QPS_FAILED=0
+CONC_FAILED=0
+
+run_bench_case() {
+    # $1 = 显示名称  $2.. = benchmark_client 参数
+    local name="$1"
+    shift
+    echo ""
+    echo "--- Benchmark: $name ---"
+    "$BENCH_CLIENT" "$@"
+    local rc=$?
+    if [ $rc -ne 0 ]; then
+        echo "✗ $name FAILED (exit=$rc)"
+        return 1
+    fi
+    echo "✓ $name PASSED"
+    return 0
+}
+
 echo ""
 echo "=========================================="
-echo "  LightRPC Benchmark Test"
+echo "  LightRPC Benchmark Tests"
 echo "=========================================="
 
 if [ ! -x "$BENCH_SERVER" ] || [ ! -x "$BENCH_CLIENT" ]; then
     echo "✗ Benchmark binaries not found in $BENCH_DIR"
     echo "  Run cmake build first."
-    BENCH_FAILED=1
+    QPS_FAILED=1
+    CONC_FAILED=1
 else
     # 启动 benchmark server（后台）
     "$BENCH_SERVER" "$BENCH_PORT" &
@@ -69,7 +89,8 @@ else
     for i in $(seq 1 50); do
         if ! kill -0 "$BENCH_PID" 2>/dev/null; then
             echo "✗ Benchmark server failed to start"
-            BENCH_FAILED=1
+            QPS_FAILED=1
+            CONC_FAILED=1
             break
         fi
         # 尝试连接端口检测是否就绪
@@ -83,20 +104,27 @@ else
     if [ $READY -eq 1 ]; then
         echo "Benchmark server started (PID: $BENCH_PID, port: $BENCH_PORT)"
 
-        # 运行压测：4 线程 / 4 连接 / 1000 QPS / 10 秒 / 2 秒预热 / 1 秒超时
-        "$BENCH_CLIENT" -connections 4 -threads 4 -qps 1000 -duration 10 -warmup 2 -timeout 1000
-        if [ $? -ne 0 ]; then
-            BENCH_FAILED=1
-        fi
+        # Case 1: QPS 模式 — 开环压测，固定发送速率
+        run_bench_case "qps_mode_1000qps" \
+            -mode qps -connections 4 -threads 4 -qps 1000 \
+            -duration 10 -warmup 2 -timeout 1000 || QPS_FAILED=1
+
+        # Case 2: Concurrency 模式 — 闭环并发，固定在途请求数
+        run_bench_case "concurrency_mode_200" \
+            -mode concurrency -connections 4 -threads 4 -concurrency 200 \
+            -duration 10 -warmup 2 -timeout 1000 || CONC_FAILED=1
     else
-        if [ $BENCH_FAILED -eq 0 ]; then
+        if [ $QPS_FAILED -eq 0 ] && [ $CONC_FAILED -eq 0 ]; then
             echo "✗ Benchmark server did not become ready in time"
-            BENCH_FAILED=1
+            QPS_FAILED=1
+            CONC_FAILED=1
         fi
     fi
 
     cleanup_bench
 fi
+
+BENCH_FAILED=$((QPS_FAILED + CONC_FAILED))
 
 # ==========================================
 # 清理与汇总
@@ -111,11 +139,18 @@ echo ""
 echo "=========================================="
 echo "  Final Summary"
 echo "=========================================="
-echo "Unit Tests:     $((TOTAL - FAILED))/$TOTAL passed"
-if [ $BENCH_FAILED -eq 0 ]; then
-    echo "Benchmark Test: PASSED"
+echo "Unit Tests:       $((TOTAL - FAILED))/$TOTAL passed"
+
+# Benchmark 明细：QPS 模式 / Concurrency 模式
+if [ $QPS_FAILED -eq 0 ]; then
+    echo "Benchmark (QPS): PASSED"
 else
-    echo "Benchmark Test: FAILED"
+    echo "Benchmark (QPS): FAILED"
+fi
+if [ $CONC_FAILED -eq 0 ]; then
+    echo "Benchmark (Concurrency): PASSED"
+else
+    echo "Benchmark (Concurrency): FAILED"
 fi
 
 if [ $FAILED -eq 0 ] && [ $BENCH_FAILED -eq 0 ]; then
