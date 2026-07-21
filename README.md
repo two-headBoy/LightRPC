@@ -4,12 +4,16 @@
 
 ## 特性
 
-- **Reactor 网络模型**：单线程 EventLoop + epoll，跨线程任务通过 `eventfd` 唤醒
-- **内部 EventLoop 管理**：`RpcServer` / `RpcClient` 内部创建和管理 EventLoop，启动时自动运行事件循环线程
-- **强类型 RPC 接口**：基于 SFINAE 的 `is_proto_message` trait，编译期校验 Protobuf 类型，自动完成序列化/反序列化
-- **长度前缀帧协议**：4 字节长度（网络字节序）+ Protobuf 数据，解决粘包/半包
-- **异步日志**：异步队列 + 后台写线程，按天/按行数滚动
-- **请求超时机制**：客户端支持自定义请求超时时间，超时自动清理待处理请求
+## 特性
+- **Reactor 异步网络**：当前实现为单 EventLoop + epoll；通过 eventfd 实现跨线程任务唤醒
+- **内置事件循环管理**：RpcServer / RpcClient 内部托管 EventLoop，启动后自动运行事件循环线程
+- **IO 与业务解耦**：网络IO逻辑运行在EventLoop，业务处理交由独立线程池，杜绝阻塞网络事件循环
+- **编译期强类型 RPC**：基于 SFINAE 实现 `is_proto_message` 类型特征，编译期校验 Protobuf 请求/响应类型，自动序列化与反序列化
+- **自定义帧协议**：4字节大端长度前缀 + Protobuf 二进制体，完整解决 TCP 粘包、半包问题
+- **客户端长连接池**：支持多TCP长连接复用，可配置连接数量，实现多路请求并发传输
+- **请求超时管控**：客户端支持自定义RPC超时，超时自动清理pending回调，避免内存泄漏
+- **高性能异步日志**：日志异步队列 + 后台落盘线程，支持按天/按行数滚动切割
+- **配套压测工具**：内置QPS限流压测客户端，支持自定义线程数、连接数、压测时长，输出完整延迟分位指标(P50/P90/P99)
 
 ## 依赖
 
@@ -36,6 +40,12 @@ cmake .. && make -j$(nproc)
 ./bin/tests/channel_test
 ./bin/tests/epoller_test
 ./bin/tests/timer_test
+
+# 运行性能压测
+./bin/tests/benchmark/benchmark_server   # 终端 1
+./bin/tests/benchmark/benchmark_client   # 终端 2
+# 高并发压测：8线程，5000 QPS，持续60秒
+./bin/tests/benchmark/benchmark_client -threads 8 -qps 5000 -duration 60
 ```
 
 ### 服务端
@@ -100,6 +110,7 @@ LightRPC/
 │   └── rpc/               # RpcServer / RpcClient / RpcService
 ├── examples/              # 应用层示例（含业务 .proto）
 ├── tests/                 # 单元测试
+│   └── benchmark/         # 性能压测工具（benchmark_server / benchmark_client）
 ├── docs/                  # 设计文档
 ├── .clang-format          # Clang 格式化配置
 ├── CMakeLists.txt

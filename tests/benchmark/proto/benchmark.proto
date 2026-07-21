@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package benchmark;
+
+message EchoRequest {
+    string message = 1;
+    int32 timestamp = 2;
+}
+
+message EchoResponse {
+    string message = 1;
+    int32 processed_time = 2;
+}
+
+message EmptyRequest {
+}
+
+message EmptyResponse {
+}
+
+service BenchmarkService {
+    rpc Echo(EchoRequest) returns (EchoResponse);
+    rpc Ping(EmptyRequest) returns (EmptyResponse);
+}

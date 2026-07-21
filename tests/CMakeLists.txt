@@ -4,6 +4,7 @@ find_package(GTest REQUIRED)
 
 include_directories(
     ${CMAKE_SOURCE_DIR}/code
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 add_executable(buffer_test base/buffer/buffer_test.cc)
@@ -104,6 +105,34 @@ target_link_libraries(rpc_server_test
 )
 set_target_properties(rpc_server_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/tests
+)
+
+add_library(benchmark_protos STATIC
+    benchmark/proto/benchmark.pb.cc
+)
+target_include_directories(benchmark_protos PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/benchmark
+)
+target_link_libraries(benchmark_protos PUBLIC
+    ${Protobuf_LIBRARIES}
+)
+
+add_executable(benchmark_server benchmark/benchmark_server.cc)
+target_link_libraries(benchmark_server
+    lightrpc
+    benchmark_protos
+)
+set_target_properties(benchmark_server PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/tests/benchmark
+)
+
+add_executable(benchmark_client benchmark/benchmark_client.cc)
+target_link_libraries(benchmark_client
+    lightrpc
+    benchmark_protos
+)
+set_target_properties(benchmark_client PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/tests/benchmark
 )
 
 message(STATUS "Tests will be built in: ${CMAKE_BINARY_DIR}/bin/tests/")
