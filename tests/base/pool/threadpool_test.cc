@@ -239,6 +239,28 @@ TEST(ThreadPoolTest, TryAddTaskConcurrent) {
 TEST(ThreadPoolTest, TryAddTaskMixedWithAddTask) {
     ThreadPool pool(2, 5);
     std::atomic<int> counter{0};
+    std::mutex block_mtx;
+    std::mutex sync_mtx;
+    std::condition_variable sync_cv;
+    std::atomic<int> worker_ready{0};
+
+    std::unique_lock<std::mutex> block_lock(block_mtx);
+
+    auto worker_func = [&]() {
+        {
+            std::lock_guard<std::mutex> lg(sync_mtx);
+            worker_ready++;
+        }
+        sync_cv.notify_one();
+
+        std::unique_lock<std::mutex> lk(block_mtx);
+    };
+
+    pool.AddTask(worker_func);
+    pool.AddTask(worker_func);
+
+    std::unique_lock<std::mutex> sync_lk(sync_mtx);
+    sync_cv.wait(sync_lk, [&](){ return worker_ready.load() == 2; });
 
     bool ret1 = pool.TryAddTask([&counter]() { counter += 1; });
     bool ret2 = pool.TryAddTask([&counter]() { counter += 2; });
@@ -254,11 +276,11 @@ TEST(ThreadPoolTest, TryAddTaskMixedWithAddTask) {
 
     bool ret5 = pool.TryAddTask([&counter]() { counter += 6; });
     EXPECT_FALSE(ret5);
+    EXPECT_THROW(pool.AddTask([&counter]() { counter += 6; }), std::runtime_error);
 
-    EXPECT_THROW(pool.AddTask([]() {}), std::runtime_error);
-
+    block_lock.unlock();
     pool.WaitForTasks();
-    EXPECT_EQ(counter.load(), 1 + 2 + 3 + 4 + 5);
+    EXPECT_EQ(counter.load(), 15);
 }
 
 }  // namespace rpc
