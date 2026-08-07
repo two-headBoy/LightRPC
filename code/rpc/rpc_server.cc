@@ -26,9 +26,9 @@ void RpcServer::Start() {
     }
 
     LOG_INFO("RpcServer starting on %s:%d", ip_.c_str(), port_);
-    tcp_server_->Start();
-
     loop_thread_ = std::thread([this]() { loop_->Loop(); });
+
+    tcp_server_->Start();
 
     LOG_INFO("RpcServer started successfully");
 }
@@ -37,11 +37,11 @@ void RpcServer::Stop() {
     bool expected = false;
     if (stopped_.compare_exchange_strong(expected, true)) {
         LOG_INFO("RpcServer stopping");
+        tcp_server_->Stop();
         loop_->Quit();
         if (loop_thread_.joinable()) {
             loop_thread_.join();
         }
-        tcp_server_->Stop();
         pool_.reset();
         LOG_INFO("RpcServer stopped");
     }

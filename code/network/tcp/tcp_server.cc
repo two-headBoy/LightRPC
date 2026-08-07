@@ -33,11 +33,13 @@ TcpServer::~TcpServer() {
 }
 
 void TcpServer::Start() {
-    listen(listen_fd_, 1024);
+    loop_->RunInLoop([this]() {
+        listen(listen_fd_, 1024);
 
-    accept_channel_ = std::make_unique<Channel>(loop_, listen_fd_);
-    accept_channel_->SetReadCallback(std::bind(&TcpServer::HandleAccept, this));
-    accept_channel_->EnableReading();
+        accept_channel_ = std::make_unique<Channel>(loop_, listen_fd_);
+        accept_channel_->SetReadCallback(std::bind(&TcpServer::HandleAccept, this));
+        accept_channel_->EnableReading();
+    });
 }
 
 void TcpServer::Stop() {
