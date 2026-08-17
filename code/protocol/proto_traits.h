@@ -1,17 +1,12 @@
 #pragma once
-#include <string>
+
 #include <type_traits>
+#include <google/protobuf/message.h>
 
 namespace rpc {
 
-template <typename T, typename = void>
-struct is_proto_message : std::false_type {};
-
 template <typename T>
-struct is_proto_message<T,
-                        std::void_t<decltype(std::declval<T>().SerializeToString(std::declval<std::string *>())),
-                                    decltype(std::declval<T>().ParseFromString(std::declval<const std::string &>()))>>
-    : std::true_type {};
+struct is_proto_message : std::is_base_of<::google::protobuf::Message, T> {};
 
 template <typename T>
 constexpr bool is_proto_message_v = is_proto_message<T>::value;
