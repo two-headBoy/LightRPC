@@ -36,7 +36,8 @@ public:
 
     template <typename ReqT, typename RspT>
     void Call(const std::string &service_name, const std::string &method_name, const ReqT &req,
-              std::function<void(const RspT &)> callback, int timeout_ms = 5000) {
+              std::function<void(int32_t code, const std::string &msg, const RspT &resp)> callback,
+              int timeout_ms = 5000) {
         static_assert(is_proto_message_v<ReqT>, "ReqT must be a protobuf message");
         static_assert(is_proto_message_v<RspT>, "RspT must be a protobuf message");
 
@@ -45,24 +46,25 @@ public:
             LOG_ERROR("Serialize request failed: service=%s, method=%s", service_name.c_str(), method_name.c_str());
             if (callback) {
                 RspT rsp;
-                callback(rsp);
+                callback(static_cast<int32_t>(RpcErrorCode::CLIENT_REQUEST_SERIALIZE_FAILED),
+                         "serialize request failed", rsp);
             }
             return;
         }
 
         ResponseCallback raw_cb = [cb = std::move(callback)](const RpcResponse &resp) {
             RspT rsp;
-            if (resp.code() != static_cast<int32_t>(RpcErrorCode::OK)) {
-                LOG_WARN("RPC call failed: code=%d, msg=%s", resp.code(), resp.msg().c_str());
-                if (cb) cb(rsp);
-                return;
+            int32_t code = resp.code();
+            const std::string &msg = resp.msg();
+            if (code == static_cast<int32_t>(RpcErrorCode::OK)) {
+                if (!rsp.ParseFromString(resp.body())) {
+                    code = static_cast<int32_t>(RpcErrorCode::CLIENT_RESPONSE_PARSE_FAILED);
+                    LOG_ERROR("Parse response failed: code=%d, msg=%s", code, msg.c_str());
+                }
+            } else {
+                LOG_WARN("RPC call failed: code=%d, msg=%s", code, msg.c_str());
             }
-            if (!rsp.ParseFromString(resp.body())) {
-                LOG_ERROR("Parse response failed: code=%d, msg=%s", resp.code(), resp.msg().c_str());
-                if (cb) cb(rsp);
-                return;
-            }
-            if (cb) cb(rsp);
+            if (cb) cb(code, msg, rsp);
         };
 
         CallRaw(service_name, method_name, body, std::move(raw_cb), timeout_ms);

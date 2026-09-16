@@ -63,6 +63,9 @@ void TcpClient::Connect() {
             connection_ = std::make_shared<TcpConnection>(loop_, fd, ip_, port_);
             connection_->setConnectionCallback(connectionCallback_);
             connection_->setMessageCallback(messageCallback_);
+            // 被动断开时同步 connected_ 状态，否则 IsConnected 会一直误报 true
+            connection_->setCloseCallback(
+                [this](const std::shared_ptr<TcpConnection> &) { SetConnected(false); });
             SetConnected(true);
 
             if (connectionCallback_) {
@@ -129,6 +132,9 @@ void TcpClient::HandleWrite() {
         connection_ = std::make_shared<TcpConnection>(loop_, sock_fd_, ip_, port_);
         connection_->setConnectionCallback(connectionCallback_);
         connection_->setMessageCallback(messageCallback_);
+        // 被动断开时同步 connected_ 状态，否则 IsConnected 会一直误报 true
+        connection_->setCloseCallback(
+            [this](const std::shared_ptr<TcpConnection> &) { SetConnected(false); });
         SetConnected(true);
 
         if (connectionCallback_) {

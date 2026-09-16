@@ -5,6 +5,7 @@
 #include "base/log/log.h"
 #include "network/core/event_loop.h"
 
+#include <ctime>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -47,8 +48,12 @@ int main() {
     get_req.set_user_id(1);
     client.Call<user::GetUserRequest, user::GetUserResponse>(
         "UserService", "GetUser", get_req,
-        [](const user::GetUserResponse& resp) {
+        [](int32_t code, const std::string &msg, const user::GetUserResponse& resp) {
             std::cout << "\n=== GetUser Response ===" << std::endl;
+            if (code != 0) {
+                std::cout << "RPC failed: code=" << code << ", msg=" << msg << std::endl;
+                return;
+            }
             std::cout << "user_id: " << resp.user_id() << std::endl;
             std::cout << "name:    " << resp.name() << std::endl;
             std::cout << "email:   " << resp.email() << std::endl;
@@ -56,14 +61,30 @@ int main() {
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
+    // 空闲等待测试：sleep 10s 后再发数据，验证连接是否还活着
+    {
+        auto now_t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        std::cout << "\n=== Idle wait test: sleep 10s ===" << std::endl;
+        std::cout << "sleep start at:        " << std::ctime(&now_t);
+        std::cout << "IsConnected (before):  " << (client.IsConnected() ? "true" : "false") << std::endl;
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+        auto end_t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        std::cout << "sleep end at:          " << std::ctime(&end_t);
+        std::cout << "IsConnected (after):   " << (client.IsConnected() ? "true" : "false") << std::endl;
+    }
+
     // CreateUser
     user::CreateUserRequest create_req;
     create_req.set_name("Alice");
     create_req.set_email("alice@example.com");
     client.Call<user::CreateUserRequest, user::CreateUserResponse>(
         "UserService", "CreateUser", create_req,
-        [](const user::CreateUserResponse& resp) {
+        [](int32_t code, const std::string &msg, const user::CreateUserResponse& resp) {
             std::cout << "\n=== CreateUser Response ===" << std::endl;
+            if (code != 0) {
+                std::cout << "RPC failed: code=" << code << ", msg=" << msg << std::endl;
+                return;
+            }
             std::cout << "new user_id: " << resp.user_id() << std::endl;
         });
 
@@ -75,8 +96,12 @@ int main() {
     add_req.set_b(200);
     client.Call<math::AddRequest, math::AddResponse>(
         "MathService", "Add", add_req,
-        [](const math::AddResponse& resp) {
+        [](int32_t code, const std::string &msg, const math::AddResponse& resp) {
             std::cout << "\n=== Add Response ===" << std::endl;
+            if (code != 0) {
+                std::cout << "RPC failed: code=" << code << ", msg=" << msg << std::endl;
+                return;
+            }
             std::cout << "result: " << resp.result() << std::endl;
         });
 
@@ -88,8 +113,12 @@ int main() {
     timeout_req.set_b(2);
     client.Call<math::AddRequest, math::AddResponse>(
         "MathService", "NonExistentMethod", timeout_req,
-        [](const math::AddResponse& resp) {
+        [](int32_t code, const std::string &msg, const math::AddResponse& resp) {
             std::cout << "\n=== NonExistentMethod Response ===" << std::endl;
+            if (code != 0) {
+                std::cout << "RPC failed: code=" << code << ", msg=" << msg << std::endl;
+                return;
+            }
             std::cout << "result: " << resp.result() << std::endl;
         },
         1000);
