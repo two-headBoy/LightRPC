@@ -23,6 +23,7 @@ enum class RpcErrorCode : int32_t {
     SERVER_BUSY = 2003,
     SERVER_REQUEST_PARSE_FAILED = 2004,
     SERVER_RESPONSE_SERIALIZE_FAILED = 2005,
+    SERVER_SHUTTING_DOWN = 2006,
 };
 
 inline std::string RpcErrorCodeToString(RpcErrorCode code) {
@@ -53,6 +54,8 @@ inline std::string RpcErrorCodeToString(RpcErrorCode code) {
             return "SERVER_REQUEST_PARSE_FAILED";
         case RpcErrorCode::SERVER_RESPONSE_SERIALIZE_FAILED:
             return "SERVER_RESPONSE_SERIALIZE_FAILED";
+        case RpcErrorCode::SERVER_SHUTTING_DOWN:
+            return "SERVER_SHUTTING_DOWN";
         default:
             return "UNKNOWN";
     }

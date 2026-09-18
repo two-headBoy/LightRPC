@@ -26,6 +26,15 @@ public:
     void SetConnectionCallback(const ConnectionCallback &cb) { connectionCallback_ = cb; }
     void SetMessageCallback(const MessageCallback &cb) { messageCallback_ = cb; }
 
+    // 在 loop 线程内对每个连接执行回调，用于广播 GOAWAY 等场景
+    // 调用方必须保证在 loop 线程内调用（connections_ 无锁）
+    template <typename F>
+    void ForEachConnectionInLoop(F &&f) {
+        for (auto &pair : connections_) {
+            f(pair.second);
+        }
+    }
+
 private:
     void HandleAccept();
     void RemoveConnection(const std::shared_ptr<TcpConnection> &conn);
