@@ -53,10 +53,32 @@ void TcpServer::Stop() {
     }
 }
 
-void TcpServer::StopInLoop() {
+void TcpServer::StopAccepting() {
+    // shutdown 是系统调用，跨线程安全，主线程立即让 listener 拒绝新连接
+    // 防止 WaitForTasks 期间新请求涌入导致永远等不完
+    if (listen_fd_ >= 0) {
+        ::shutdown(listen_fd_, SHUT_RDWR);
+    }
+    // channel cleanup 必须在 loop 线程做
+    if (loop_->IsInLoopThread()) {
+        StopAcceptingInLoop();
+    } else {
+        loop_->RunInLoop(std::bind(&TcpServer::StopAcceptingInLoop, this));
+    }
+}
+
+void TcpServer::StopAcceptingInLoop() {
     if (accept_channel_) {
         accept_channel_->DisableAll();
         accept_channel_.reset();
+    }
+}
+
+void TcpServer::StopInLoop() {
+    StopAcceptingInLoop();
+    // 应对直接调 Stop 跳过 StopAccepting 的情况（幂等）
+    if (listen_fd_ >= 0) {
+        ::shutdown(listen_fd_, SHUT_RDWR);
     }
 
     std::vector<std::shared_ptr<TcpConnection>> conns;
@@ -71,10 +93,6 @@ void TcpServer::StopInLoop() {
     }
 
     connections_.clear();
-
-    if (listen_fd_ >= 0) {
-        ::shutdown(listen_fd_, SHUT_RDWR);
-    }
 }
 
 void TcpServer::HandleAccept() {

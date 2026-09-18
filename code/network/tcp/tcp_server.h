@@ -20,6 +20,8 @@ public:
 
     void Start();
     void Stop();
+    // 仅停止接受新连接，不动已有连接
+    void StopAccepting();
 
     void SetConnectionCallback(const ConnectionCallback &cb) { connectionCallback_ = cb; }
     void SetMessageCallback(const MessageCallback &cb) { messageCallback_ = cb; }
@@ -28,6 +30,7 @@ private:
     void HandleAccept();
     void RemoveConnection(const std::shared_ptr<TcpConnection> &conn);
     void StopInLoop();
+    void StopAcceptingInLoop();
     void ServerThreadFunc();
 
     EventLoop *loop_;

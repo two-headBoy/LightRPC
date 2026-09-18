@@ -37,7 +37,14 @@ void RpcServer::Stop() {
     bool expected = false;
     if (stopped_.compare_exchange_strong(expected, true)) {
         LOG_INFO("RpcServer stopping");
+        // 关闭顺序很关键：
+        // 1. 先停 listener，新连接不再进来（同步生效）
+        tcp_server_->StopAccepting();
+        // 2. 等已投递任务跑完，期间响应仍能通过 conn->send 发出去
+        pool_->WaitForTasks();
+        // 3. 关闭所有已建立的连接（FIN 通知客户端）
         tcp_server_->Stop();
+        // 4. 停事件循环 + 析构线程池
         loop_->Quit();
         if (loop_thread_.joinable()) {
             loop_thread_.join();
