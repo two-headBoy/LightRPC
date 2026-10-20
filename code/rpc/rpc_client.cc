@@ -142,17 +142,20 @@ void RpcClient::onConnection(const std::shared_ptr<TcpConnection> &conn) {
 }
 
 void RpcClient::onMessage(const std::shared_ptr<TcpConnection> &conn, Buffer *buffer) {
-    (void)conn;
     while (buffer->ReadableBytes() >= 4) {
         RpcResponse response;
-        if (!Codec::decode(buffer->PeekStringView(), response)) {
+        size_t consumed = 0;
+        auto status = Codec::decode(buffer->PeekStringView(), response, consumed);
+        if (status == Codec::DecodeStatus::Incomplete) {
             break;
         }
+        if (status == Codec::DecodeStatus::Corrupted) {
+            LOG_WARN("Corrupted frame from server, closing connection fd=%d", conn->fd());
+            conn->close();
+            return;
+        }
 
-        uint32_t len;
-        memcpy(&len, buffer->Peek(), 4);
-        len = ntohl(len);
-        buffer->Retrieve(4 + len);
+        buffer->Retrieve(consumed);
 
         std::string request_id = response.request_id();
 

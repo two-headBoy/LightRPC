@@ -84,14 +84,19 @@ void RpcServer::onConnection(const std::shared_ptr<TcpConnection> &conn) {
 void RpcServer::onMessage(const std::shared_ptr<TcpConnection> &conn, Buffer *buffer) {
     while (buffer->ReadableBytes() >= 4) {
         RpcRequest request;
-        if (!Codec::decode(buffer->PeekStringView(), request)) {
+        size_t consumed = 0;
+        auto status = Codec::decode(buffer->PeekStringView(), request, consumed);
+        if (status == Codec::DecodeStatus::Incomplete) {
             break;
         }
+        if (status == Codec::DecodeStatus::Corrupted) {
+            LOG_WARN("Corrupted frame from peer %s:%d, closing connection fd=%d", conn->peer_ip().c_str(),
+                     conn->peer_port(), conn->fd());
+            conn->close();
+            return;
+        }
 
-        uint32_t len;
-        memcpy(&len, buffer->Peek(), 4);
-        len = ntohl(len);
-        buffer->Retrieve(4 + len);
+        buffer->Retrieve(consumed);
 
         LOG_DEBUG("Received request: id=%s, service=%s, method=%s", request.request_id().c_str(),
                   request.service_name().c_str(), request.method_name().c_str());
