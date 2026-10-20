@@ -117,12 +117,6 @@ ssize_t Buffer::WriteFd(int fd, int *savedErrno) {
     return n;
 }
 
-void Buffer::swap(Buffer &other) noexcept {
-    buffer_.swap(other.buffer_);
-    std::swap(readPos_, other.readPos_);
-    std::swap(writePos_, other.writePos_);
-}
-
 void Buffer::makeSpace(size_t needed) {
     if (WritableBytes() + PrependableBytes() < needed) {
         size_t newSize = std::max(writePos_ + needed, needed + INITIAL_SIZE);

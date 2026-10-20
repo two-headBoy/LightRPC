@@ -40,7 +40,6 @@ private:
     void RemoveConnection(const std::shared_ptr<TcpConnection> &conn);
     void StopInLoop();
     void StopAcceptingInLoop();
-    void ServerThreadFunc();
 
     EventLoop *loop_;
     std::string ip_;

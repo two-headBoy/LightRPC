@@ -108,7 +108,6 @@ private:
     };
 
 private:
-    static const int LOG_PATH_LEN = 256;
     static const int LOG_NAME_LEN = 256;
     static const int MAX_LINES = 50000;
 

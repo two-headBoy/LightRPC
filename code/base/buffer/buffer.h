@@ -52,8 +52,6 @@ public:
     ssize_t ReadFd(int fd, int *savedErrno);
     ssize_t WriteFd(int fd, int *savedErrno);
 
-    void swap(Buffer &other) noexcept;
-
 private:
     std::byte *begin() noexcept { return buffer_.data(); }
     const std::byte *begin() const noexcept { return buffer_.data(); }
