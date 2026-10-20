@@ -15,9 +15,10 @@ void TimeWheel::AddTimer(int id, TimeoutCallBack cb, int delay_ms) {
 
     TimeStamp expire = Clock::now() + MS(delay_ms);
     int total_slots = delay_ms / tick_ms_;
+    int rounds = total_slots / WHEEL_SIZE;
     int target_slot = (current_slot_ + total_slots) % WHEEL_SIZE;
 
-    TimerNode node{id, std::move(cb), expire, false};
+    TimerNode node{id, std::move(cb), expire, false, rounds};
     auto it = wheel_[target_slot].insert(wheel_[target_slot].end(), std::move(node));
     timer_map_[id] = {target_slot, it};
 }
@@ -38,11 +39,13 @@ void TimeWheel::Tick() {
             if (it->isDeleted) {
                 timer_map_.erase(it->id);
                 it = current_list.erase(it);
-            } else if (Clock::now() >= it->expire) {
+            } else if (it->rounds == 0 || Clock::now() >= it->expire) {
+                // rounds 归 0 正常到期；expire 兜底处理 tick 被严重延迟的情况
                 it->cb();
                 timer_map_.erase(it->id);
                 it = current_list.erase(it);
             } else {
+                it->rounds--;
                 ++it;
             }
         }

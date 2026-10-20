@@ -18,6 +18,7 @@ struct TimerNode {
     TimeoutCallBack cb;
     TimeStamp expire;
     bool isDeleted;
+    int rounds;  // 剩余需要跳过的完整轮转数，0 表示本圈到期
 };
 
 class TimeWheel {
