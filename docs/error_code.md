@@ -41,6 +41,7 @@ LightRPC 采用统一的错误码体系，所有 RPC 调用的状态通过 `RpcR
 | 2003 | `SERVER_BUSY` | 服务端繁忙 | 线程池任务队列已满，拒绝新请求 |
 | 2004 | `SERVER_REQUEST_PARSE_FAILED` | 请求体解析失败 | 请求 body 无法解析为业务 handler 的 ReqT 类型 |
 | 2005 | `SERVER_RESPONSE_SERIALIZE_FAILED` | 响应体序列化失败 | 业务 handler 的 RspT 无法序列化为字符串 |
+| 2006 | `SERVER_SHUTTING_DOWN` | 服务端关闭中 | 服务端正在停止，拒绝新请求 |
 
 ## 头文件
 

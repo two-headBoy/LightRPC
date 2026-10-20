@@ -131,6 +131,8 @@ LightRPC/
 
 Frame format: `4-byte length (network byte order) + Protobuf data`
 
+> Max frame size is 64MB. Frames with an invalid length or failed Protobuf parsing trigger connection close, preventing malicious data from exhausting the buffer or hanging the connection.
+
 RPC envelope messages:
 
 ```protobuf
