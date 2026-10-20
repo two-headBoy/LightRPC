@@ -1,5 +1,8 @@
 #include "tcp_connection.h"
 
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 namespace rpc {
@@ -7,6 +10,8 @@ namespace rpc {
 TcpConnection::TcpConnection(EventLoop *loop, int fd, const std::string &peer_ip, uint16_t peer_port)
     : input_buffer_(std::make_unique<Buffer>()), output_buffer_(std::make_unique<Buffer>()), loop_(loop), sockfd_(fd),
       state_(Connected), channel_(std::make_unique<Channel>(loop, fd)), peer_ip_(peer_ip), peer_port_(peer_port) {
+    SetKeepAlive(sockfd_);
+
     channel_->SetReadCallback(std::bind(&TcpConnection::handleRead, this));
     channel_->SetWriteCallback(std::bind(&TcpConnection::handleWrite, this));
     channel_->SetCloseCallback(std::bind(&TcpConnection::handleClose, this));
@@ -126,6 +131,22 @@ void TcpConnection::handleClose() {
     if (closeCallback_) {
         closeCallback_(shared_from_this());
     }
+}
+
+void TcpConnection::SetKeepAlive(int fd) {
+    int on = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on)) < 0) {
+        return;
+    }
+
+    // 空闲 30s 后开始探测，探测间隔 10s，连续 3 次无响应判定对端死亡
+    // 总检测时长约 30 + 3 * 10 = 60s
+    int keepidle = 30;
+    int keepintvl = 10;
+    int keepcnt = 3;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(keepidle));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
 }
 
 }  // namespace rpc

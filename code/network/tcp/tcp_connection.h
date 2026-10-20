@@ -44,6 +44,8 @@ private:
     void handleWrite();
     void handleClose();
 
+    static void SetKeepAlive(int fd);
+
     std::unique_ptr<Buffer> input_buffer_;
     std::unique_ptr<Buffer> output_buffer_;
 
